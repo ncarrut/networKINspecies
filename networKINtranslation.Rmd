@@ -10,7 +10,6 @@ knitr::opts_chunk$set(echo = FALSE)
 ```{r}
 library(conflicted)
 library(tidyverse)
-library(seqinr)
 library(UniProt.ws)
 library(Biostrings)
 ```
@@ -19,7 +18,7 @@ library(Biostrings)
 
 
 ```{r}
-networKIN <- read.delim("E:\\Documents\\NJC\\networKINmouse\\data\\networkin_human_predictions_3.1.tsv",
+networKIN <- read.delim("data\\networkin_human_predictions_3.1.tsv.xz", sep = "\t", header = TRUE,
                         stringsAsFactors = FALSE)
 ## Make ensembl2uniprot
 writeClipboard(unique(networKIN$string_identifier))
@@ -27,6 +26,9 @@ ensembl2uniprot <- read.delim("data/ensembl2uniprot.tab", stringsAsFactors = FAL
 names(ensembl2uniprot)[1] <- "ensemble"
 networKINu <- inner_join(networKIN, ensembl2uniprot,
                          by = c("string_identifier" = "ensemble"))
+networKINu <- networKINu %>%
+  mutate(AA = toupper(substr(sequence, 6, 6))) %>%
+  mutate(accAASite = paste0(Entry, "_", AA, position))
 nrow(networKIN)
 nrow(networKINu)
 
@@ -35,15 +37,124 @@ writeClipboard(ensembl2uniprot$Entry)
 uniprot2refseqGroups <- read.delim("data/uniprot2refseqGroups.tab", stringsAsFactors = FALSE)
 names(uniprot2refseqGroups)[1] <- "uniprot"
 
-## get mouse homologs
+## load mouse proteome data for filtering
+mouseProteome <- read.delim("data/uniprot-taxonomy_10090.tab.gz", stringsAsFactors = FALSE)
+
+## get mouse homologs only
 uniprotHuman2Mouse <- list()
 for(i in 1:nrow(uniprot2refseqGroups)){
-  clusterSpecies <- base::strsplit(uniprot2refseqGroups$Organisms[i], "; ")[[1]]
   clusterProteins <- base::strsplit(uniprot2refseqGroups$Cluster.members[i], "; ")[[1]]
-  uniprotHuman2Mouse[[i]] <- clusterProteins[clusterSpecies == "Mus musculus (Mouse)"]
+  uniprotHuman2Mouse[[i]] <- clusterProteins[clusterProteins %in% mouseProteome$Entry]
   names(uniprotHuman2Mouse)[i] <- uniprot2refseqGroups$uniprot[i]
 }
+uniprotHuman2Mouse <- uniprotHuman2Mouse[sapply(uniprotHuman2Mouse, length) > 0 ]
+
+## split clusters containing multiple human proteins
+newNameList <- base::strsplit(names(uniprotHuman2Mouse), ",")
+temp <- uniprotHuman2Mouse[rep(1:length(uniprotHuman2Mouse), sapply(newNameList, length))]
+names(temp) <- unlist(newNameList)
+length(uniprotHuman2Mouse)
+length(temp)
+
+uniprotHuman2Mouse <- temp
 ```
+
+```{r}
+getAlignment <- function(acc1, acc2, up1, up2){
+  humanSequence <- select(up1,
+              keys = c(acc1), 
+              columns = c("SEQUENCE"), 
+              keytype = "UNIPROTKB")
+  mouseSequence <- select(up2,
+              keys = c(acc2), 
+              columns = c("SEQUENCE"), 
+              keytype = "UNIPROTKB")
+  
+  alignment <- pairwiseAlignment(gsub("U", "*", humanSequence$SEQUENCE), 
+                               gsub("U", "*", mouseSequence$SEQUENCE), 
+                               substitutionMatrix = "BLOSUM50", gapOpening = -2,
+                               gapExtension = -8, scoreOnly = FALSE)
+  alignment
+}
+
+acc1 <- names(uniprotHuman2Mouse)[i]
+acc2 <- uniprotHuman2Mouse[[i]][j]
+up1 <- upHs
+up2 <- upMm
+#pos <- 154
+
+translatePosition <- function(pos, alignment){
+  delRange <- deletion(alignment)[[1]]
+  insRange <- insertion(alignment)[[1]]
+  newPos <- rep(NA, length(pos))
+  newAA <- rep(NA, length(pos))
+  for(i in 1:length(pos)){
+    newPos[i] <- pos[i] + 
+      sum(width(delRange)[start(delRange) <= pos[i]]) - 
+      sum(width(insRange)[start(insRange) < pos[i]])
+    s <- subject(alignment)
+    newAA[i] <- substr(as.character(unaligned(s)), newPos[i], newPos[i])
+  }
+return(list(pos = newPos, AA = newAA))
+}
+  
+  
+```
+```{r}
+data(BLOSUM50)
+BLOSUM50
+
+gsub("U", "*", humanSequence$SEQUENCE)
+```
+
+
+```{r}
+upHs <- UniProt.ws(taxId = 9606)
+upMm <- UniProt.ws(taxId = 10090)
+
+## make a list of lists of dataframes to keep track of results.  
+## list 1 will be human proteins, list 2 will be mouse proteins and contents will be site mapping table
+human2mouseSites <- list()
+#for(i in 1:length(uniprotHuman2Mouse)){
+for(i in 1:100){
+  hSites <- dplyr::filter(networKINu, Entry == names(uniprotHuman2Mouse)[i])
+  human2mouseSites[[i]] <- list()
+  names(human2mouseSites)[i] <- names(uniprotHuman2Mouse)[i]
+  if(!is.null(length(uniprotHuman2Mouse[[i]]))){
+    for(j in 1:length(uniprotHuman2Mouse[[i]])){
+      alignment <- getAlignment(names(uniprotHuman2Mouse)[i], uniprotHuman2Mouse[[i]][j],
+                   upHs, upMm)
+      mSites <- hSites #%>%
+        #dplyr::filter(!duplicated(accAASite))
+      tRes <- translatePosition(mSites$position, alignment) 
+      mSites$newAcc <- rep(uniprotHuman2Mouse[[i]][j], nrow(mSites))
+      mSites$newAA <- tRes$AA
+      mSites$newPos <- tRes$pos
+      mSites <- mSites %>%
+        mutate(newAccAASite = paste0(newAcc, "_", newAA, newPos))
+      human2mouseSites[[i]][[j]] <- mSites
+    }
+  }
+}
+
+
+```
+
+```{r}
+## Merge and filter for AAs that don't match
+tempList <- list()
+for(i in 1:length(human2mouseSites)){
+  if(length(human2mouseSites[[i]]) == 1){
+    tempList[[i]] <- human2mouseSites[[i]][[1]]
+  }
+  if(length(human2mouseSites[[i]]) > 1)
+      tempList[[i]] <- do.call(rbind, human2mouseSites[[i]])
+}
+
+networKINMouse <- do.call(rbind, tempList) 
+
+```
+
 
 ```{r}
 ## pairwise sequence alignments between human and mouse
@@ -61,26 +172,68 @@ mouseSequence <- select(upMm,
               keys = c(uniprotHuman2Mouse[[i]][j]), 
               columns = c("SEQUENCE"), 
               keytype = "UNIPROTKB")
-dotPlot(base::strsplit(humanSequence$SEQUENCE, split = "")[[1]], 
-        base::strsplit(mouseSequence$SEQUENCE, split = "")[[1]])
 
 alignment <- pairwiseAlignment(humanSequence$SEQUENCE, 
                                mouseSequence$SEQUENCE, 
                                substitutionMatrix = "BLOSUM50", gapOpening = -2,
                                gapExtension = -8, scoreOnly = FALSE)
 
-alignment
+
+nchar(humanSequence$SEQUENCE)
+nchar(mouseSequence$SEQUENCE)
 
 s <- subject(alignment)
 aligned(s)
+unaligned(s)
 
 p <- pattern(alignment)
-str(aligned(p))
+aligned(p)
+unaligned(p)
 
-networKIN$X.substrate
-
+mat <- consensusMatrix(alignment)
+str(mat)
 ```
 
+```{r}
+pattern <- AAString("LAND")
+subject <- AAString("LEEAVES")
+pa1 <- pairwiseAlignment(pattern, subject, substitutionMatrix="BLOSUM50",gapOpening=3, gapExtension=1)
+
+delRange <- deletion(pa1)[[1]]
+insRange <- insertion(pa1)[[1]]
+pos <- 2
+consensusPos <- pos + sum(width(delRange)[start(delRange) <= pos])
+subjectPos <- consensusPos - sum()
+
+alignedPattern <- pattern(pa1)
+
+
+
+
+class(alignedPattern)  # AlignedXStringSet object
+unaligned(alignedPattern)
+aligned(alignedPattern)
+as.character(alignedPattern)
+nchar(alignedPattern)
+
+consensusMatrix(pa1)
+temp <- coverage(pa1)
+str(temp)
+lengths(temp)
+```
+
+```{r}
+pattern <- AAString("LAND")
+subject <- AAString("LEAVES")
+pa2 <- pairwiseAlignment(subject, pattern, substitutionMatrix="BLOSUM50",gapOpening=3, gapExtension=1)
+
+delRange <- deletion(pa2)[[1]]
+insRange <- insertion(pa2)[[1]]
+pos <- 3
+subjectPos <- pos + sum(width(delRange)[start(delRange) <= pos]) - sum(width(insRange)[start(insRange) < pos])
+subjectPos
+
+```
 
 
 
