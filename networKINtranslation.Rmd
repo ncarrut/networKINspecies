@@ -60,15 +60,32 @@ uniprotHuman2Mouse <- temp
 ```
 
 ```{r}
+for(j in 1:4){
+  tryCatch({
+  acc2 <- uniprotHuman2Mouse[[i]][j]
+  mouseSequence <- select(up2,
+              keys = c(acc2), 
+              columns = c("SEQUENCE"), 
+              keytype = "UNIPROTKB")
+  },  error = function(e){})
+}
+
+```
+
+
+
+```{r}
 getAlignment <- function(acc1, acc2, up1, up2){
   humanSequence <- select(up1,
               keys = c(acc1), 
               columns = c("SEQUENCE"), 
               keytype = "UNIPROTKB")
+  tryCatch({
   mouseSequence <- select(up2,
               keys = c(acc2), 
               columns = c("SEQUENCE"), 
               keytype = "UNIPROTKB")
+  },  error = function(e){})
   
   alignment <- pairwiseAlignment(gsub("U", "*", humanSequence$SEQUENCE), 
                                gsub("U", "*", mouseSequence$SEQUENCE), 
@@ -100,11 +117,12 @@ return(list(pos = newPos, AA = newAA))
   
   
 ```
-```{r}
-data(BLOSUM50)
-BLOSUM50
 
-gsub("U", "*", humanSequence$SEQUENCE)
+```{r}
+# data(BLOSUM50)
+# BLOSUM50
+# 
+# gsub("U", "*", humanSequence$SEQUENCE)
 ```
 
 
@@ -115,8 +133,8 @@ upMm <- UniProt.ws(taxId = 10090)
 ## make a list of lists of dataframes to keep track of results.  
 ## list 1 will be human proteins, list 2 will be mouse proteins and contents will be site mapping table
 human2mouseSites <- list()
-#for(i in 1:length(uniprotHuman2Mouse)){
-for(i in 1:100){
+for(i in 482:length(uniprotHuman2Mouse)){
+#for(i in 1:100){
   hSites <- dplyr::filter(networKINu, Entry == names(uniprotHuman2Mouse)[i])
   human2mouseSites[[i]] <- list()
   names(human2mouseSites)[i] <- names(uniprotHuman2Mouse)[i]
@@ -137,7 +155,7 @@ for(i in 1:100){
   }
 }
 
-
+save(human2mouseSites, file = "temp.RData")
 ```
 
 ```{r}
@@ -152,6 +170,10 @@ for(i in 1:length(human2mouseSites)){
 }
 
 networKINMouse <- do.call(rbind, tempList) 
+sum(networKINMouse$AA == networKINMouse$newAA) #  674066
+nrow(networKINMouse) ## 1212277
+networKINMouse <- dplyr::filter(networKINMouse, AA == newAA)
+save(networKINMouse, file = "networKINMouse.RData")
 
 ```
 
